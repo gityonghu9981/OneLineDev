@@ -104,6 +104,7 @@ class _SettingsTabState extends State<SettingsTab> {
       });
     });
     _errSub = bridge.onError.listen((e) {
+      // 任何报错都解除进行中的 busy 状态，避免按钮卡死
       if (mounted) {
         setState(() {
           _saving = false;
@@ -134,6 +135,7 @@ class _SettingsTabState extends State<SettingsTab> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
+      // 启动/停止后立即刷新状态
       bridge.listBackends();
     });
     _settingsSavedSub = bridge.onSettingsSaved.listen((s) {
@@ -183,6 +185,7 @@ class _SettingsTabState extends State<SettingsTab> {
     super.dispose();
   }
 
+  // ---- 动作 ----
   Future<void> _connect() async {
     if (_connecting) return;
     final h = _hostCtrl.text.trim();
@@ -204,7 +207,7 @@ class _SettingsTabState extends State<SettingsTab> {
     setState(() => _activeBackendId = v);
     SettingsStore.saveString('backend_id', v);
     bridge.setBackend(v);
-    bridge.listModels();
+    bridge.listModels(); // 拉取该后端的模型列表
   }
 
   void _saveSettings() {
@@ -237,8 +240,10 @@ class _SettingsTabState extends State<SettingsTab> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // 1. 外观主题
         ThemeCard(themeMode: _themeMode, onChanged: _setTheme),
         const SizedBox(height: 12),
+        // 2. 连接管理
         ConnectionCard(
           hostCtrl: _hostCtrl,
           portCtrl: _portCtrl,
@@ -248,6 +253,7 @@ class _SettingsTabState extends State<SettingsTab> {
           onDisconnect: () => bridge.disconnect(),
         ),
         const SizedBox(height: 12),
+        // 3. 各后端设置入口（点进去：先选择当前后端，再点某后端进入它的独立设置页）
         Card(
           child: ListTile(
             leading: const Icon(Icons.settings_suggest),
@@ -270,6 +276,7 @@ class _SettingsTabState extends State<SettingsTab> {
             ),
           ),
         ),
+        // 4. 智能上下文压缩（全局）
         ContextCompressCard(
           enabled: _compressEnabled,
           ratio: _compressRatio,
@@ -279,6 +286,7 @@ class _SettingsTabState extends State<SettingsTab> {
           onBatch: (v) => setState(() => _compressBatch = v),
         ),
         const SizedBox(height: 12),
+        // 7. 声线选择
         VoiceCard(
           voices: _voices,
           curVoice: _curVoice,
@@ -289,10 +297,13 @@ class _SettingsTabState extends State<SettingsTab> {
           },
         ),
         const SizedBox(height: 12),
+        // 8. 保存设置
         SaveButton(onSave: _saveSettings, saving: _saving),
         const SizedBox(height: 12),
+        // 9. 使用说明
         const HelpCard(),
         const SizedBox(height: 12),
+        // 10. 版本号
         Center(
           child: Padding(
             padding: const EdgeInsets.only(bottom: 4),

@@ -8,6 +8,9 @@ import 'llama_manager_page.dart';
 import 'strata_manager_page.dart';
 
 /// ============ 后端列表页 ============
+/// 从设置主页点「各后端设置」进入。顶部单选当前对话后端，
+/// 下面每个后端一行可点击，点某行即进入该后端的独立设置详情页。
+/// 数据实时来自中转（订阅 onBackends 刷新）。
 class BackendListPage extends StatefulWidget {
   final String activeBackendId;
   final ValueChanged<String> onSelect;
@@ -28,6 +31,7 @@ class _BackendListPageState extends State<BackendListPage> {
   @override
   void initState() {
     super.initState();
+    // 直接用 bridge 已缓存的最新后端列表初始化，再订阅增量刷新
     _backends = List<Map<String, dynamic>>.from(bridge.backends);
     _backendsSub = bridge.onBackends.listen((list) {
       if (!mounted) return;
@@ -128,6 +132,7 @@ class _BackendListPageState extends State<BackendListPage> {
                           '${running ? '运行中' : '未运行'}${port.isNotEmpty ? ' · 端口 $port' : ''} · $type'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () {
+                        // 进入详情页前先把它设为当前后端
                         widget.onSelect(id);
                         Navigator.push(
                           context,
@@ -141,6 +146,7 @@ class _BackendListPageState extends State<BackendListPage> {
                   );
                 }),
                 const SizedBox(height: 4),
+                // llama.cpp 管理器入口（统一模型库，随便选模型+调参+加载切换）
                 Card(
                   margin: const EdgeInsets.only(top: 8),
                   child: ListTile(
@@ -158,6 +164,7 @@ class _BackendListPageState extends State<BackendListPage> {
                     ),
                   ),
                 ),
+                // Strata 管理器入口（orca 专用，显存控制）
                 Card(
                   margin: const EdgeInsets.only(top: 8),
                   child: ListTile(

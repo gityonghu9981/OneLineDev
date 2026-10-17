@@ -32,7 +32,7 @@ class _ChatTabState extends State<ChatTab> {
   bool _slideToCancel = false;
   double _voiceStartY = 0;
   static const double _slideCancelThreshold = 70;
-  int _contextLimit = 4096;
+  int _contextLimit = 4096; // 当前后端上下文上限（用于顶部统计）
   StreamSubscription? _sttSub;
   StreamSubscription? _textSub;
   StreamSubscription? _errSub;
@@ -40,14 +40,19 @@ class _ChatTabState extends State<ChatTab> {
   StreamSubscription? _backendActiveSub;
   StreamSubscription? _deltaSub;
   StreamSubscription? _compressedSub;
+  // 当前流式生成中的 assistant 消息索引（null=无流式）；流式结束时用完整回复替换
   int? _streamIdx;
 
   List<ChatMsg> get _messages =>
       SessionManager.instance.current?.messages ?? const [];
 
+  // 当前会话 id（用于协议按会话隔离）
   String get _curId => SessionManager.instance.current?.id ?? '';
   bool _lastConnected = false;
 
+  // 会话↔后端绑定：与当前 active 不一致（用户切了模型/后端，或首次使用）时，
+  // 重新绑定并把前端可见的非 system 历史"重放"进新后端桶——新后端立即拿到
+  // 完整上下文，解决"切换模型/后端后聊天不连贯"。
   String _ensureBackend() {
     final cur = SessionManager.instance.current;
     if (cur == null) return '';
@@ -55,7 +60,7 @@ class _ChatTabState extends State<ChatTab> {
     if (active.isEmpty) return cur.backendId;
     if (cur.backendId != active) {
       cur.backendId = active;
-      cur.compressShift = 0;
+      cur.compressShift = 0; // 重放后桶与前端可见消息一一对应
       SessionManager.instance.persist();
       _replayHistory(cur, active);
     }
@@ -72,8 +77,11 @@ class _ChatTabState extends State<ChatTab> {
     bridge.syncHistory(msgs, conversationId: conv.id, backendId: bid);
   }
 
+  // 前端 messages 含 system 气泡；服务端历史只存 user/assistant，且最旧的
+  // compressShift 条已被压缩成摘要移出。换算时两者都要扣除。
   int get _shift => SessionManager.instance.current?.compressShift ?? 0;
 
+  // 保留前 keep 条（含 system）里，落在服务端可见范围的非 system 条数
   int _nsKeep(int keep) {
     final msgs = _messages;
     int n = 0;
@@ -84,6 +92,7 @@ class _ChatTabState extends State<ChatTab> {
     return n < 0 ? 0 : n;
   }
 
+  // 前端第 idx 条消息对应服务端非 system 序列里的第几个（已扣压缩偏移）
   int _nsIndex(int idx) {
     final msgs = _messages;
     if (idx < 0 || idx >= msgs.length || msgs[idx].role == 'system') return -1;
@@ -92,7 +101,7 @@ class _ChatTabState extends State<ChatTab> {
       if (msgs[i].role != 'system') n++;
     }
     n -= _shift;
-    return n;
+    return n; // <0 表示该条已被压缩，服务端自动忽略
   }
 
   @override
@@ -103,10 +112,12 @@ class _ChatTabState extends State<ChatTab> {
     SessionManager.instance.addListener(_onSessionChanged);
     _contextLimit = _loadContextLimit();
     _textSub = bridge.onText.listen((r) {
+      // 回复按来源会话投递：路由到 r.conversationId 对应会话，不是"此刻打开的"
       final conv = r.conversationId.isNotEmpty
           ? SessionManager.instance.byId(r.conversationId)
           : SessionManager.instance.current;
       if (conv == null) return;
+      // 仅当正在查看该会话时才更新流式索引并刷新 UI
       final viewing = conv.id == _curId;
       if (viewing) {
         setState(() {
@@ -131,6 +142,7 @@ class _ChatTabState extends State<ChatTab> {
           _sending = false;
         });
       } else {
+        // 后台会话：旧流式气泡可能已作废，直接移除占位再追加完整回复
         if (_streamIdx != null && _streamIdx! < conv.messages.length &&
             conv.messages[_streamIdx!].role == 'assistant' &&
             conv.messages[_streamIdx!].text.isEmpty) {
@@ -148,6 +160,7 @@ class _ChatTabState extends State<ChatTab> {
       SessionManager.instance.persist();
       if (viewing) _scrollDown();
     });
+    // P1-5 流式增量：模型边生成边逐块追加渲染（仅渲染到来源会话且正在查看时）
     _deltaSub = bridge.onDelta.listen((ch) {
       final conv = ch.conversationId.isNotEmpty
           ? SessionManager.instance.byId(ch.conversationId)
@@ -174,11 +187,13 @@ class _ChatTabState extends State<ChatTab> {
         _scrollDown();
       } else if (_streamIdx == null ||
           _streamIdx! >= conv.messages.length) {
+        // 后台流式：只占一次位，不刷 UI，等最终 text 事件替换
         conv.messages.add(ChatMsg('assistant', ''));
         _streamIdx = conv.messages.length - 1;
       }
     });
     _errSub = bridge.onError.listen((e) {
+      // 错误按来源会话投递；无会话上下文的全局错误（连接类）投当前
       final conv = e.conversationId.isNotEmpty
           ? (SessionManager.instance.byId(e.conversationId) ??
               SessionManager.instance.ensureCurrent())
@@ -196,6 +211,7 @@ class _ChatTabState extends State<ChatTab> {
       SessionManager.instance.persist();
       if (viewing) _scrollDown();
     });
+    // 上下文压缩事件：后端把最旧对话压成概要后，顶部提示用户并记录偏移
     _compressedSub = bridge.onCompressed.listen((ci) {
       final conv = ci.conversationId.isNotEmpty
           ? SessionManager.instance.byId(ci.conversationId)
@@ -217,6 +233,7 @@ class _ChatTabState extends State<ChatTab> {
     _statusSub = bridge.onStatus.listen((ok) {
       if (!mounted) return;
       setState(() {
+        // 只在断开→重连成功时加一条系统提示，避免自动重连刷屏
         if (ok && !_lastConnected) {
           final cur = SessionManager.instance.ensureCurrent();
           cur.messages.add(ChatMsg('system', '已连接本地电脑'));
@@ -231,6 +248,7 @@ class _ChatTabState extends State<ChatTab> {
       if (t.trim().isNotEmpty) _sendText(t.trim());
     });
     _backendActiveSub = bridge.onBackendActive.listen((bid) {
+      // 切换后端时更新上下文上限
       setState(() => _contextLimit = _loadContextLimit());
     });
   }
@@ -247,10 +265,12 @@ class _ChatTabState extends State<ChatTab> {
     return 4096;
   }
 
+  /// 切换会话：自动把当前后端/模型切到该会话记录的关联值
   void _onSessionChanged() {
-    _streamIdx = null;
+    _streamIdx = null; // 切换会话时重置流式索引
     final cur = SessionManager.instance.current;
     if (cur != null) {
+      // 接管该会话后台生成中的占位气泡（空 assistant 且无统计），避免重复占位
       if (cur.messages.isNotEmpty) {
         final last = cur.messages.last;
         if (last.role == 'assistant' &&
@@ -259,6 +279,8 @@ class _ChatTabState extends State<ChatTab> {
           _streamIdx = cur.messages.length - 1;
         }
       }
+      // 会话已绑定后端 → 全局 active 跟随会话；先乐观更新本地 active，
+      // 避免紧随其后的 _ensureBackend 误判"用户换了后端"而错误重绑
       if (cur.backendId.isNotEmpty && cur.backendId != bridge.activeBackendId) {
         bridge.activeBackendId = cur.backendId;
         bridge.setBackend(cur.backendId);
@@ -297,6 +319,7 @@ class _ChatTabState extends State<ChatTab> {
     });
   }
 
+  // ===== 普通发送 =====
   void _sendText(String text) {
     final t = text.trim();
     if (t.isEmpty && _attachments.isEmpty) return;
@@ -309,6 +332,7 @@ class _ChatTabState extends State<ChatTab> {
     }
     final cur = SessionManager.instance.ensureCurrent();
     final att = List<Map<String, dynamic>>.from(_attachments);
+    // 用户气泡里展示附件名，方便查看
     String display = t;
     if (att.isNotEmpty) {
       final names = att.map((a) => a['name']).join('、');
@@ -329,6 +353,7 @@ class _ChatTabState extends State<ChatTab> {
     _scrollDown();
   }
 
+  // ===== 附件选择（图片/文件） =====
   Future<void> _pickAttachment() async {
     final choice = await showModalBottomSheet<String>(
       context: context,
@@ -362,14 +387,16 @@ class _ChatTabState extends State<ChatTab> {
     final picked = a;
     if (picked != null && mounted) {
       setState(() => _attachments.add(picked));
+      // 有附件时切回键盘输入，方便补文字
       if (_inputMode != 0) setState(() => _inputMode = 0);
     }
   }
 
   void _send() => _sendText(_input.text);
 
+  // ===== 截断重写（删除 index 及之后所有消息，前端+后端同步） =====
   void _truncateTo(int keep) {
-    final nsKeep = _nsKeep(keep);
+    final nsKeep = _nsKeep(keep); // 换算：前 keep 条（含 system）里的非 system 条数
     final msgs = SessionManager.instance.ensureCurrent().messages;
     while (msgs.length > keep) {
       msgs.removeLast();
@@ -379,6 +406,7 @@ class _ChatTabState extends State<ChatTab> {
         conversationId: _curId, backendId: _ensureBackend());
   }
 
+  // 播放
   void _play(ChatMsg m) {
     if (m.text.trim().isEmpty) return;
     if (!bridge.connected) {
@@ -391,6 +419,7 @@ class _ChatTabState extends State<ChatTab> {
     bridge.sendTtsSpeak(m.text.trim());
   }
 
+  // 重置某条 assistant：从该条截断，重新生成（原对话条目完成）
   void _regenerateAt(ChatMsg m, int index) {
     if (!bridge.connected) {
       setState(() => SessionManager.instance.ensureCurrent()
@@ -399,6 +428,7 @@ class _ChatTabState extends State<ChatTab> {
       _scrollDown();
       return;
     }
+    // 保留 index 条（删除该 assistant 及其后），最后一条是它前面的 user
     setState(() {
       _truncateTo(index);
       _sending = true;
@@ -409,6 +439,7 @@ class _ChatTabState extends State<ChatTab> {
         backendId: _ensureBackend());
   }
 
+  // 重发一条用户消息：从该条截断，重新发送
   void _resendAt(ChatMsg m, int index) {
     if (!bridge.connected) {
       setState(() => SessionManager.instance.ensureCurrent()
@@ -418,9 +449,10 @@ class _ChatTabState extends State<ChatTab> {
       return;
     }
     setState(() {
-      _truncateTo(index + 1);
+      _truncateTo(index + 1); // 保留到该 user（前后端同步截断）
       _sending = true;
     });
+    // resend=true：服务端替换同槽位的该 user（截断保留的那条），不再重复追加
     bridge.sendChat(m.text,
         voice: _voice,
         conversationId: _curId,
@@ -428,6 +460,7 @@ class _ChatTabState extends State<ChatTab> {
         resend: true);
   }
 
+  // 修改用户消息：编辑文本 → 截断 → 在原条目重发（不新建条目）
   Future<void> _editMessage(ChatMsg m, int index) async {
     final ctrl = TextEditingController(text: m.text);
     final newText = await showDialog<String>(
@@ -460,9 +493,10 @@ class _ChatTabState extends State<ChatTab> {
     }
     setState(() {
       _messages[index] = ChatMsg('user', t);
-      _truncateTo(index + 1);
+      _truncateTo(index + 1); // 保留到修改后的 user，删除其后
       _sending = true;
     });
+    // 截断后服务端末尾是同槽位旧 user，resend 让它被新内容替换而非重复追加
     bridge.sendChat(t,
         voice: _voice,
         conversationId: _curId,
@@ -470,6 +504,7 @@ class _ChatTabState extends State<ChatTab> {
         resend: true);
   }
 
+  // 删除单条消息（只删该条，保留其余；后端同步删除对应位置）
   void _delete(ChatMsg m, int index) {
     showDialog(
       context: context,
@@ -483,7 +518,7 @@ class _ChatTabState extends State<ChatTab> {
               Navigator.pop(ctx);
               final cur = SessionManager.instance.ensureCurrent();
               if (index >= 0 && index < cur.messages.length) {
-                final nsIdx = _nsIndex(index);
+                final nsIdx = _nsIndex(index); // system 气泡返回 -1，服务端自动忽略
                 setState(() {
                   cur.messages.removeAt(index);
                   SessionManager.instance.persist();
@@ -499,6 +534,7 @@ class _ChatTabState extends State<ChatTab> {
     );
   }
 
+  // 清空对话
   void _clearChat() {
     showDialog(
       context: context,
@@ -526,6 +562,7 @@ class _ChatTabState extends State<ChatTab> {
     );
   }
 
+  // ===== 按住说话（STT 语音输入）=====
   Future<void> _startRecord() async {
     if (_recording) return;
     if (!bridge.connected) {
@@ -578,6 +615,7 @@ class _ChatTabState extends State<ChatTab> {
     }
   }
 
+  // ===== 语音上滑取消（微信式）：按住说话时上滑可取消发送 =====
   void _voiceDown(PointerDownEvent e) {
     _voiceStartY = e.position.dy;
     if (_slideToCancel) setState(() => _slideToCancel = false);
@@ -600,6 +638,7 @@ class _ChatTabState extends State<ChatTab> {
     if (mounted && _slideToCancel) setState(() => _slideToCancel = false);
   }
 
+  // 上滑取消：停录音、删文件，不发送
   Future<void> _cancelRecord() async {
     setState(() => _recording = false);
     try {
@@ -611,6 +650,7 @@ class _ChatTabState extends State<ChatTab> {
     } catch (_) {}
   }
 
+  // ===== 统计 =====
   Map<String, int> _sessionStats() {
     int prompt = 0, completion = 0, cached = 0;
     for (final m in _messages) {
@@ -718,6 +758,7 @@ class _ChatTabState extends State<ChatTab> {
     );
   }
 
+  // 对话顶部上下文统计总览（含使用进度条 + 手动压缩按钮）
   Widget _statsOverview() {
     final st = _sessionStats();
     final used = st['prompt']! + st['completion']!;
@@ -805,6 +846,7 @@ class _ChatTabState extends State<ChatTab> {
               crossAxisAlignment:
                   isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
               children: [
+                // 思考内容（可折叠）
                 if (m.reasoning != null && m.reasoning!.isNotEmpty)
                   _thinkingBlock(m.reasoning!),
                 Text(m.text),
@@ -817,6 +859,7 @@ class _ChatTabState extends State<ChatTab> {
     );
   }
 
+  // 思考内容折叠块
   Widget _thinkingBlock(String reasoning) {
     final color = Theme.of(context).colorScheme;
     return Container(
@@ -842,6 +885,7 @@ class _ChatTabState extends State<ChatTab> {
     );
   }
 
+  // 消息统计行：耗时 + 数据量（字符/token）
   Widget _msgMetaLine(ChatMsg m, bool isUser) {
     final color = Theme.of(context).colorScheme.outline;
     final parts = <String>[];
@@ -870,6 +914,7 @@ class _ChatTabState extends State<ChatTab> {
     );
   }
 
+  /// 每条消息下方的操作按钮
   List<Widget> _msgActions(ChatMsg m, int index) {
     final color = Theme.of(context).colorScheme.outline;
     final items = <Widget>[];
@@ -902,6 +947,7 @@ class _ChatTabState extends State<ChatTab> {
     );
   }
 
+  // 消息气泡 + 操作按钮（供 ListView 使用）
   Widget _bubbleWithActions(ChatMsg m, int index) {
     final isUser = m.role == 'user';
     final isSys = m.role == 'system';
@@ -939,6 +985,7 @@ class _ChatTabState extends State<ChatTab> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // 待发送附件标签（可点 × 移除）
                 if (_attachments.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
@@ -974,6 +1021,7 @@ class _ChatTabState extends State<ChatTab> {
                   onPressed: () =>
                       setState(() => _inputMode = _inputMode == 0 ? 1 : 0),
                 ),
+                // 附件按钮（图片/文件，键盘模式可用）
                 if (_inputMode == 0)
                   IconButton(
                     icon: Icon(Icons.add_circle_outline,
@@ -1001,6 +1049,7 @@ class _ChatTabState extends State<ChatTab> {
                   )
                 else
                   Expanded(
+                    // 用 Listener 捕获指针级事件：上滑到按钮外松开也能判定取消
                     child: Listener(
                       onPointerDown: _voiceDown,
                       onPointerMove: _voiceMove,
@@ -1059,6 +1108,7 @@ class _ChatTabState extends State<ChatTab> {
           ),
         ),
         ),
+        // 录音提示浮层（微信式：上滑取消）
         if (_recording)
           Positioned(
             bottom: 84,
@@ -1169,6 +1219,7 @@ class ConversationDrawer extends StatelessWidget {
                                     ),
                                   );
                                   if (ok == true) {
+                                    // 先通知服务端清历史桶，再删本地（断开时仅删本地，服务端桶随会话名失效不再使用）
                                     if (bridge.connected) {
                                       bridge.deleteConversation(conv.id);
                                     }

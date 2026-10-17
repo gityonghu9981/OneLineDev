@@ -131,12 +131,15 @@ class BridgeClient {
     _connecting = true;
     if (host.trim().isEmpty) host = '192.168.1.6';
     if (port <= 0) port = 8765;
+    // 诊断日志：记录实际连接目标，便于定位自动重连的端口问题
     print('L_BRIDGE doConnect target=${wsUrl()} host=$host port=$port reconnect=$_reconnectAttempt');
     try {
       _channel = WebSocketChannel.connect(Uri.parse(wsUrl()));
       await _channel!.ready;
       connected = true;
       _reconnectAttempt = 0;
+      // 重连成功后清挂起标记：旧连接的等待已随断线作废，
+      // 若不复位会把新连接的心跳超时永久跳过（僵尸连接）
       _hasPending = false;
       _statusCtrl.add(true);
       _listen();
@@ -182,6 +185,7 @@ class BridgeClient {
     _lastPong = DateTime.now();
     _pingTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!connected) return;
+      // 正在等模型回复时不计超时：慢推理 ≠ 断线
       if (_hasPending) {
         _lastPong = DateTime.now();
         return;
@@ -225,15 +229,13 @@ class BridgeClient {
 
   void _handleMessage(String raw) {
     try {
-      final m = jsonDecode(raw) as Map<String, dynamic>;
-      switch (m['type']) {
+      final m = jsonDecode(raw) as Map<String, dynamic>;      switch (m['type']) {
         case 'pong':
           _lastPong = DateTime.now();
           break;
         case 'text':
           _hasPending = false;
-          _textCtrl.add(ChatResult(
-            text: (m['text'] ?? '').toString(),
+          _textCtrl.add(ChatResult(            text: (m['text'] ?? '').toString(),
             reasoning: (m['reasoning'] ?? '').toString(),
             usage: (m['usage'] is Map)
                 ? Map<String, dynamic>.from(m['usage'] as Map)
@@ -306,6 +308,7 @@ class BridgeClient {
           final st = (m['status'] ?? '').toString();
           final msg = (m['message'] ?? '').toString();
           _backendStatusCtrl.add('$bid：$st${msg.isNotEmpty ? '（$msg）' : ''}');
+          // 启动/停止后端后，延迟主动刷新 backends 状态，避免 UI 显示滞后
           Future.delayed(const Duration(seconds: 8), () {
             if (connected) listBackends();
           });
@@ -336,7 +339,6 @@ class BridgeClient {
         case 'llama_load_result':
         case 'llama_unload_result':
           _llamaResultCtrl.add(Map<String, dynamic>.from(m));
-          break;
         case 'strata_models':
         case 'strata_status':
         case 'strata_load_result':
@@ -398,6 +400,7 @@ class BridgeClient {
   void setVoice(String voice) =>
       _channel?.sink.add(jsonEncode({'type': 'set_voice', 'voice': voice}));
 
+  // 播放指定文本（单条消息 TTS 播报）
   void sendTtsSpeak(String text) =>
       _channel?.sink.add(jsonEncode({'type': 'tts_speak', 'text': text}));
 
@@ -411,11 +414,14 @@ class BridgeClient {
         'conversation_id': ?conversationId,
         'backend_id': ?backendId,
       }));
+  // 删除会话：通知服务端清掉该会话在所有后端下的历史
   void deleteConversation(String conversationId) =>
       _channel?.sink.add(jsonEncode({
         'type': 'delete_conversation',
         'conversation_id': conversationId,
       }));
+  // 历史重放：会话换绑后端（或首次绑定且本地已有记录）时，把可见的
+  // 非 system 消息整桶发给服务端，新后端立即获得完整上下文
   void syncHistory(List<Map<String, String>> messages,
       {String? conversationId, String? backendId}) =>
       _channel?.sink.add(jsonEncode({
@@ -424,6 +430,7 @@ class BridgeClient {
         'conversation_id': ?conversationId,
         'backend_id': ?backendId,
       }));
+  // 截断重写：keep = 要保留的非 system 消息条数（前端已换算）
   void truncateHistory(int keep, {String? conversationId, String? backendId}) =>
       _channel?.sink.add(jsonEncode({
         'type': 'truncate_history',
@@ -431,6 +438,7 @@ class BridgeClient {
         'conversation_id': ?conversationId,
         'backend_id': ?backendId,
       }));
+  // 删除单条消息：index = 第 N 条非 system 消息（前端已换算）
   void deleteMessage(int index, {String? conversationId, String? backendId}) =>
       _channel?.sink.add(jsonEncode({
         'type': 'delete_message',
@@ -447,12 +455,14 @@ class BridgeClient {
       'backend_id': ?backendId,
     }));
   }
+  // 手动触发上下文压缩：把当前会话最旧对话压成概要
   void compressContext({String? conversationId, String? backendId}) =>
       _channel?.sink.add(jsonEncode({
         'type': 'compress_context',
         'conversation_id': ?conversationId,
         'backend_id': ?backendId,
       }));
+  // ---- LM Studio 本地模型管理 ----
   void lmListLocal() =>
       _channel?.sink.add(jsonEncode({'type': 'lm_list_local'}));
   void lmLoad(String model, {String gpu = 'max', int context = 8192}) =>

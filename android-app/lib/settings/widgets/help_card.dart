@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// ============ 使用说明 ============
+/// 底部说明卡片（纯静态文本）。
 class HelpCard extends StatelessWidget {
   const HelpCard({super.key});
 
