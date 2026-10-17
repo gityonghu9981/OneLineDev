@@ -1,0 +1,40 @@
+# ===== 模型 / 大数据（绝不发布）=====
+*.gguf
+*.safetensors
+*.bin
+*.onnx
+*.pth
+models/
+model_cache/
+# ===== 第三方工具 / 构建缓存（README 索引，不发布）=====
+tools/
+**/.venv/
+**/venv/
+**/build/
+**/.dart_tool/
+**/.gradle/
+**/.idea/
+**/__pycache__/
+*.pyc
+# ===== 隐私 / 日志 / 状态 =====
+bridge/conversations.json
+*.log
+*.err
+# ===== 测试产物 / 截图 / dump =====
+bridge/emu_*
+bridge/ui*.xml
+bridge/ui_*.xml
+bridge/chat*.xml
+bridge/cl*.xml
+bridge/*_test.py
+bridge/e2e_*.py
+bridge/check_active.py
+bridge/bridge_raw.txt
+# ===== 真实配置（只发布脱敏 example，真实配置不提交）=====
+bridge/config.json
+bridge/config.json.bak*
+bridge/*.bak*
+# ===== 本机无关文件 =====
+*.png
+*.jpg
+*.wav

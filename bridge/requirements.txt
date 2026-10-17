@@ -1,0 +1,6 @@
+# 电脑端中转服务依赖（pip install -r requirements.txt）
+fastapi
+uvicorn[standard]
+requests
+websockets
+python-multipart

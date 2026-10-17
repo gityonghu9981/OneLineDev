@@ -1,0 +1,117 @@
+{
+  "lm_studio_url": "http://127.0.0.1:1234/v1",
+  "tts_url": "http://127.0.0.1:9880/tts",
+  "tts_ref_audio": "YOUR_TTS_REF_AUDIO_PATH",
+  "tts_prompt_lang": "zh",
+  "default_model": "YOUR_DEFAULT_MODEL",
+  "context_length": 8192,
+  "tts_text_lang": "zh",
+  "tts_media_type": "wav",
+  "history_max": 20,
+  "host": "0.0.0.0",
+  "port": 8765,
+  "active_backend": null,
+  "backends": {
+    "lm_studio": {
+      "name": "LM Studio",
+      "type": "openai",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "enabled": true,
+      "controllable": false,
+      "settings": {
+        "context": 8192,
+        "temperature": 0.7,
+        "max_tokens": 1024
+      },
+      "model": "YOUR_LMSTUDIO_MODEL"
+    },
+    "openclaw": {
+      "name": "OpenClaw",
+      "type": "openclaw",
+      "base_url": "http://127.0.0.1:18789",
+      "token": "YOUR_OPENCLAW_TOKEN",
+      "enabled": true,
+      "controllable": true,
+      "port": 18789,
+      "executable": "YOUR_NODE_EXE_PATH",
+      "cwd": "YOUR_OPENCLAW_HOME",
+      "env": {
+        "OPENCLAW_GATEWAY_PORT": "18789",
+        "OPENCLAW_GATEWAY_TOKEN": "YOUR_OPENCLAW_TOKEN",
+        "OPENCLAW_SYSTEMD_UNIT": "openclaw-gateway.service",
+        "OPENCLAW_SERVICE_MARKER": "openclaw",
+        "OPENCLAW_SERVICE_KIND": "gateway",
+        "OPENCLAW_SERVICE_VERSION": "0.2.0"
+      },
+      "args": [
+        "YOUR_OPENCLAW_ENTRY",
+        "gateway",
+        "--port",
+        "18789"
+      ],
+      "settings": {
+        "context": 0,
+        "temperature": 0.7,
+        "max_tokens": 1024
+      },
+      "model": "clawdbot:main"
+    },
+    "qwenpaw": {
+      "name": "QwenPaw",
+      "type": "qwenpaw",
+      "base_url": "http://127.0.0.1:8088",
+      "enabled": true,
+      "controllable": true,
+      "port": 8088,
+      "executable": "YOUR_QWENPAW_EXE_PATH",
+      "cwd": "YOUR_QWENPAW_CWD",
+      "args": [
+        "app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8088"
+      ],
+      "settings": {
+        "context": 0,
+        "temperature": 0.7,
+        "max_tokens": 1024
+      },
+      "model": ""
+    },
+    "llama": {
+      "name": "llama.cpp 统一管理器",
+      "type": "openai",
+      "base_url": "http://127.0.0.1:8090/v1",
+      "enabled": true,
+      "controllable": true,
+      "port": 8090,
+      "settings": {
+        "context": 8192,
+        "temperature": 0.7,
+        "max_tokens": 1024
+      },
+      "model": ""
+    },
+    "strata": {
+      "name": "Strata 统一管理器",
+      "type": "openai",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "enabled": true,
+      "controllable": true,
+      "port": 8080,
+      "settings": {
+        "context": 8192,
+        "temperature": 0.7,
+        "max_tokens": 1024
+      },
+      "model": ""
+    }
+  },
+  "system_prompt": "始终使用简体中文回复，代码、命令与专有名词除外。",
+  "context_compress": {
+    "enabled": true,
+    "trigger_ratio": 0.85,
+    "batch_messages": 20
+  }
+}
